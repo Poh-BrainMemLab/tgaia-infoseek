@@ -1,0 +1,496 @@
+---
+title: "Main analysis script for TeacherGAIA"
+output: html_document
+---
+# README
+
+This file comprises the analysis script for the TeacherGAIA project, using processed data from TeacherGAIA chatlogs. For privacy purposes, the raw student-chatbot exchanges may not be shared at this point.
+
+This script is run on the files provided in ~/processed_data.
+
+# Set Up
+## Required packages
+```{r Packages, message = FALSE, warning = FALSE}
+pkgs = c("readxl", "car", "lme4", "lmerTest", "ggeffects", "psych", "tidyverse", "emmeans", "interactions", "patchwork", "svglite")
+
+inst = lapply(pkgs, library, character.only=TRUE)
+
+set.seed(555)
+```
+```{r Define file path}
+root_dir <- '/Users/brainmemorylab/Library/CloudStorage/Dropbox-NUS/BrainMemLab_TeamFolder/Projects/Tidy_TeacherGAIA/05_expositions/code_clean/processed_data'  # Update this to your project root directory
+```
+```{r Colours for plots, include = FALSE}
+colours_stress <- c("steelblue", "black", "royalblue4")
+colours_joy <-c("darkgreen", "black", "darkolivegreen4")
+colours_dep <-  c("goldenrod4","black", "darkorange2") 
+```
+```{r Set up contrasts for type III test of sig.}
+options(contrasts = c("contr.sum", "contr.poly"))
+```
+
+# Import data
+```{r}
+# Mapping of studId to learning module topic (i.e., 'dataset')
+data_studId_datasets <- readRDS(file.path(root_dir, "studId_dataset_mapping.rds"))
+
+# Prompt-level labels across dimensions by Gemini 2.5 Pro, with confidence ratings and reasons 
+data_query_intent <- read_xlsx(file.path(root_dir,'/agency_gem.xlsx')) %>%
+  mutate(
+    studId = as.factor(studId),
+    query_type = case_when(
+      label == "Active Query" ~ 1L, 
+      label == "Passive Response" ~ 0L,
+      TRUE ~ NA_integer_
+    )
+  )
+
+data_prompt_scope <- read_xlsx(file.path(root_dir,'/scope_gem.xlsx')) %>%
+  mutate(
+    studId = as.factor(studId),
+    prompt_scope = case_when(
+      label == "Close-ended" ~ 1L,
+      label == "Open-ended" ~ 2L, 
+      label == "Not Applicable" ~ 3L,
+      TRUE ~ NA_integer_
+    )
+  )
+
+data_cognitive_intent <- read_xlsx(file.path(root_dir,'/intent_gem.xlsx'))  %>%
+  mutate(label = case_when(label == "Irrelevant" ~ "Uncategorised", TRUE ~ label)) %>%
+  mutate(
+    cognitive_intent = case_when(
+      label == "Remembering" ~ 1L,
+      label == "Understanding" ~ 2L, 
+      label == "Applying" ~ 3L, 
+      label == "Analysing" ~ 4L,
+      label == "Evaluating" ~ 5L,
+      label == "Creating" ~ 6L, 
+      label == "Uncategorised" ~ 7L,
+      TRUE ~ NA_integer_
+    )
+  )  %>%
+  mutate(
+    studId = as.factor(studId),
+  )
+
+data_semantic_distance <- read_xlsx(file.path(root_dir,'/semantic_dist.xlsx')) %>%
+  mutate(
+    studId = as.factor(studId),
+    dataset = as.factor(dataset)
+  )
+
+# Academic outcomes: Imputed; keep 1st entry if duplicates present
+df_student_level_academics_base <- read_xlsx(file.path(root_dir,'/replication_academics.xlsx')) %>%
+  mutate(
+    studId = as.factor(studId),
+  )
+
+# Processed 5DCR responses, wherein students who failed the attn check and straight-lined were dropped
+df_student_level_curiosity <- read_xlsx(file.path(root_dir,'/replication_5dcr.xlsx')) %>%
+  mutate(studId = as.factor(studId)) %>%
+  drop_na(studId)
+```
+
+```{r Covariates preprocessing}
+# df of studIds, 5DCR, z-test scores
+df_student_covars <- data_studId_datasets %>%
+  dplyr::select(studId, dataset) %>%
+  mutate(dataset = droplevels(as.factor(dataset))) %>%
+  left_join(
+    df_student_level_curiosity %>% dplyr::select(studId, joyExp, depSen, strTol),
+    by = "studId"
+  ) %>%
+  left_join(
+    df_student_level_academics_base %>% dplyr::select(studId, pre_tgaia_z, post_tgaia_z),
+    by = "studId"
+  )
+```
+
+# Compute student averages of prompt features
+```{r Logit function for proportions}
+logit <- function(p) {
+  p <- pmin(pmax(p, 1e-6), 1 - 1e-6)
+  log(p / (1 - p))} 
+```
+
+```{r Prompt label preprocessing}
+data_query_intent       <- data_query_intent       %>% mutate(id = as.character(id))
+data_prompt_scope       <- data_prompt_scope       %>% mutate(id = as.character(id))
+data_cognitive_intent   <- data_cognitive_intent   %>% mutate(id = as.character(id))
+data_semantic_distance  <- data_semantic_distance  %>% mutate(id = as.character(id))
+
+#1) Active vs. Passive Prompt
+df_query_intent <- data_query_intent %>%
+  inner_join(data_studId_datasets, by = "studId") %>%
+  group_by(studId) %>%
+  summarise(
+    n_active_query      = sum(query_type == 1, na.rm = TRUE),
+    n_passive_response  = sum(query_type == 0, na.rm = TRUE),
+    n_total             = n_active_query + n_passive_response,
+    dataset             = dplyr::first(dataset),
+    .groups = "drop"
+  ) %>%
+  
+  mutate(
+    log_total = log1p(n_total),
+    prop_active_adj = (n_active_query + 0.5) / (n_total + 1),
+    logit_active = logit(prop_active_adj),
+    c_log_total = as.numeric(scale(log_total, scale = TRUE)),
+    c_logit_active = as.numeric(scale(logit_active, scale = TRUE))) %>% 
+  inner_join(df_student_covars %>% dplyr::select(-dataset), by = "studId")
+  
+
+# 2) Open vs. Closed
+df_prompt_scope <- data_prompt_scope %>%
+  group_by(studId) %>%
+  summarise(
+    n_open  = sum(prompt_scope == 2, na.rm = TRUE),
+    n_close = sum(prompt_scope == 1, na.rm = TRUE),
+    n_na    = sum(prompt_scope == 3, na.rm = TRUE),
+    n_openclose = n_open + n_close,
+    n_total = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    prop_open_adj = (n_open + 0.5) / (n_openclose + 1),
+    logit_open = logit(prop_open_adj),
+    c_logit_open = as.numeric(scale(logit_open, scale = TRUE))
+  ) %>%
+  inner_join(df_student_covars, by = "studId")
+  
+
+# 3) Intent Categories
+df_cognitive_intent <- data_cognitive_intent %>%
+  mutate(
+    is_high = as.integer(cognitive_intent %in% c(4,5,6)),
+    is_high_nc = as.integer(cognitive_intent %in% c(4,5)),
+    is_low  = as.integer(cognitive_intent %in% c(1,2,3)),
+    is_create = as.integer(cognitive_intent %in% c(6)),
+    is_na = as.integer(cognitive_intent == 7)
+  ) %>%
+  group_by(studId) %>%
+  summarise(
+    n_high = sum(is_high, na.rm = TRUE),
+    n_high_nc = sum(is_high_nc, na.rm=TRUE),
+    n_create = sum(is_create,na.rm=TRUE),
+    n_low  = sum(is_low,  na.rm = TRUE),
+    n_is_not_na = n_high + n_low,
+    n_is_uncat = sum(is_na),
+    n_total = n(),
+      .groups = "drop"
+  ) %>%
+  mutate(
+    prop_high_adj = (n_high + 0.5) / (n_is_not_na + 1),
+    logit_high = logit(prop_high_adj),
+    c_logit_high = as.numeric(scale(logit_high, scale = TRUE))
+  ) %>%
+  inner_join(df_student_covars, by = "studId")
+
+
+# 4) Off-Loading
+df_offloading <- data_cognitive_intent %>%
+  group_by(studId) %>%
+  summarise(
+    n_creating  = sum(cognitive_intent == 6, na.rm = TRUE),
+    n_is_not_na = sum(cognitive_intent < 7, na.rm = TRUE),
+    n_total     = n(),
+    .groups = "drop"
+  ) %>%
+  filter(n_is_not_na > 0) %>%
+  inner_join(df_student_covars, by = "studId") %>%
+  mutate(dataset = as.factor(dataset))
+
+# 5) Semantic distance
+df_student_level_semantics <- data_semantic_distance %>%
+  group_by(studId) %>%
+  summarise(n_total = n(),
+            mean_p2p = mean(p2p, na.rm = TRUE),
+            mean_sys = mean(sys)) %>% 
+  mutate(mean_p2p_dist = 1-mean_p2p, # reverse-scored so higher scores reflect greater dissimilarity 
+         mean_sys_dist = 1-mean_sys) %>% 
+  dplyr::select(studId, mean_p2p_dist, mean_sys_dist, n_total) %>%  
+  mutate(
+    mean_p2p_dist_z = as.numeric(scale(mean_p2p_dist, scale = TRUE)),
+    mean_sys_dist_z = as.numeric(scale(mean_sys_dist, scale = TRUE))
+  ) %>% 
+  inner_join(df_student_covars, by = "studId")
+
+```
+
+# Results
+## 5DCR on interaction volume
+```{r}
+m_5dcr_volume <- lmer(c_log_total ~ joyExp * depSen * strTol + (1|dataset), data = df_query_intent)
+summary(m_5dcr_volume)
+```
+Trait curiosity does not predict mere volume of prompts, which aligns with Jirout & Klahr (2012) and other work suggesting that curiosity is more about the quality of exploration rather than quantity.
+
+## PCA 
+```{r PCA}
+# Prepare clean dataframe for PCA
+df_pca_ready <- df_query_intent %>%
+  dplyr::select(studId, c_logit_active, c_log_total, joyExp, depSen, strTol, dataset, pre_tgaia_z, post_tgaia_z) %>%
+  
+  left_join(df_prompt_scope %>% dplyr::select(studId, c_logit_open), by = "studId") %>%
+  left_join(df_cognitive_intent %>%  dplyr::select(studId,c_logit_high), by = "studId") %>%
+  left_join(df_offloading%>% dplyr::select(studId, c_logit_off), by = "studId") %>%
+  left_join(df_student_level_semantics %>% dplyr::select(studId, mean_p2p_dist_z, mean_sys_dist_z), by = "studId") %>%
+  drop_na(c_log_total, c_logit_active, c_logit_open, c_logit_high, mean_p2p_dist_z, mean_sys_dist_z)
+
+# Check data suitability for PCA using KMO
+pca_vars <- df_pca_ready %>%
+  dplyr::select(c_logit_active, c_logit_open, c_logit_high, mean_p2p_dist_z, mean_sys_dist_z) %>%
+  drop_na() %>% 
+  as.data.frame()
+kmo_result <- KMO(pca_vars)
+print(kmo_result)
+cortest.bartlett(pca_vars)
+
+# Select and scale the 5 indicators
+pca_input_clean <- df_pca_ready %>%
+  dplyr::select(c_logit_active, c_logit_open, c_logit_high, mean_p2p_dist_z, mean_sys_dist_z) %>%
+  as.data.frame()
+
+# Parallel Analysis to select numbers of PC
+parallel_results <- fa.parallel(pca_input_clean, 
+                                fa = "pc", 
+                                n.iter = 100, 
+                                show.legend = TRUE, 
+                                main = "Scree Plot with Parallel Analysis") # suggests 2
+
+# Kaiser Criterion (Eigenvalues > 1.0)
+actual_eigenvalues <- eigen(cor(pca_input_clean))$values
+print("Actual Eigenvalues:")
+print(round(actual_eigenvalues, 3)) # suggests 2
+
+# Run the final 2-component model (based on Parallel analysis elbow)
+final_pca_model <- principal(pca_input_clean, nfactors = 2, rotate = "varimax")
+var_explained <- (final_pca_model$values / sum(final_pca_model$values)) * 100
+
+print("Variance explained by each component:\n")
+print(var_explained[1:2])
+cat("Cumulative variance explained:", sum(var_explained[1:2]), "%\n")
+print("PC loadings (cutoff = 0.3):\n")
+print(final_pca_model$loadings, cutoff = 0.3)
+
+# Extract scores back into dataframe
+df_pca_ready$Comp1 <- final_pca_model$scores[, "RC1"]
+df_pca_ready$Comp1 <- final_pca_model$scores[, "RC1"] * -1 # reverse score for interpretability 
+df_pca_ready$Comp2 <- final_pca_model$scores[, "RC2"]
+```
+Parallel analysis and Kaiser both suggest 2 components. 2 Components explain 62.6% of beh variance.
+PC1 is broadly associated with epistemic focus usage, while PC2 appears to reflect greater epistemic complexity. 
+
+```{r Fig 1: PCA biplot}
+loadings_df <- as.data.frame(final_pca_model$loadings[, 1:2])
+loadings_df$RC1 <- loadings_df$RC1 * -1  # reverse PC1 loadings
+loadings_df$variable <- rownames(loadings_df)
+
+plot_pca_biplot <- ggplot(loadings_df, aes(x = RC1, y = RC2)) +
+  geom_point(size = 6, color = "steelblue") +
+  geom_text(aes(label = variable), nudge_x = 0.05, nudge_y = 0.05) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_segment(aes(x = 0, y = 0, xend = RC1, yend = RC2),
+               arrow = arrow(length = unit(0.3, "cm"))) +
+  labs(x = "PC1 Loading",
+       y = "PC2 Loading") +
+  theme_classic() +
+  theme(axis.text = element_text(size=12),
+        axis.title = element_text(size=14))
+print(plot_pca_biplot)
+```
+
+## Predicting PCA with 5DCR
+```{r Model fits: Comp1 ~ 5DCR and Comp2 ~ 5DCR}
+# Model 1: Predicting Component 1
+m_comp1 <- lmer(Comp1 ~ depSen * joyExp * strTol + c_log_total + (1|dataset), data = df_pca_ready)
+summary(m_comp1)
+anova(m_comp1, type = 3)
+confint(m_comp1)
+
+# Model 2: Predicting Component 2
+m_comp2 <- lmer(Comp2 ~ depSen * joyExp * strTol + c_log_total + (1|dataset), data = df_pca_ready)
+summary(m_comp2)
+anova(m_comp2, type = 3)
+confint(m_comp2)
+```
+Interaction between DS x JE and JE x ST predict PC1
+
+Follow-up analyses on the 2-way interactions
+```{r Simple slopes for JE x DS on Comp 1}
+ss_comp1 <- emtrends(m_comp1, ~ joyExp, var = "depSen", at = list(joyExp = c(-1, 1)))
+
+summary(ss_comp1, infer = c(TRUE, TRUE))
+pairs(ss_comp1)
+```
+Greater DS is associated with lower PC1 when JE is low, suggesting that when DS is high, people are less likely to engage in 'exploratory' type questioning.
+
+```{r Fig 2A: DS x JE on PC1}
+pred_PC1_JExDS <- ggpredict(m_comp1, terms = c("depSen", "joyExp [meansd]"))
+
+lvl1 <- levels(factor(pred_PC1_JExDS$group))
+pred_PC1_JExDS$group <- factor(
+  pred_PC1_JExDS$group,
+  levels = lvl1,
+  labels = c("Low", "Mean", "High")
+)
+
+pred_PC1_JExDS <- pred_PC1_JExDS %>% 
+  filter(group %in% c("Low", "High")) %>% 
+  filter(!is.na(predicted))
+
+fig2A_data <- df_pca_ready %>% filter(!is.na(Comp1), !is.na(depSen), !is.na(joyExp))
+
+fig2A_PC1_JExDS <- 
+  ggplot(pred_PC1_JExDS, aes(x = x, y = predicted, fill = group, color = group)) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1) +
+  scale_color_manual(values = c("Low" = colours_dep[1], "High" = colours_dep[3])) +
+  scale_fill_manual(values = c("Low" = colours_dep[1], "High" = colours_dep[3])) +
+  labs(
+    x = "Deprivation sensitivity",
+    y = "Epistemic focus (PC1)",
+    color = "Joyous exploration",
+    fill = "Joyous exploration"
+  ) +
+  theme_classic() +
+  theme(axis.title = element_text(size = 14),
+        axis.text = element_text(size = 14),
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.position = "bottom")
+
+print(fig2A_PC1_JExDS)
+```
+```{r Simple slopes JE x ST on Comp 1}
+ss_comp2 <- emtrends(m_comp1, ~ strTol, var = "joyExp", at = list(strTol = c(-1, 1)))
+
+summary(ss_comp2, infer = c(TRUE, TRUE))
+pairs(ss_comp2)
+```
+Greater JE is associated with more exploratory processing but only when ST is also high.
+
+```{r Fig 2B: JE x ST on PC1}
+pred_PC1_JExST <- ggpredict(m_comp1, terms = c("joyExp", "strTol [meansd]"))
+lvl2 <- levels(factor(pred_PC1_JExST$group))
+pred_PC1_JExST$group <- factor(
+  pred_PC1_JExST$group,
+  levels = lvl2,
+  labels = c("Low", "Mean", "High")
+)
+pred_PC1_JExST <- pred_PC1_JExST %>% filter(group %in% c("Low", "High"))
+fig2B_PC1_JExST <- 
+  ggplot(pred_PC1_JExST, aes(x = x, y = predicted, fill = group, color = group)) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1) +
+  scale_color_manual(values = c("Low" = colours_joy[1], "High" = colours_joy[3])) +
+  scale_fill_manual(values = c("Low" = colours_joy[1], "High" = colours_joy[3])) +
+  labs(
+    x = "Joyous exploration",
+    y = "Epistemic focus (PC1)",
+    color = "Stress tolerance",
+    fill = "Stress tolerance"
+  ) +
+  theme_classic() +
+  theme(axis.title = element_text(size = 14),
+        axis.text = element_text(size = 14),
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.position = "bottom")
+print(fig2B_PC1_JExST)
+```
+
+## Predicting cognitive offloading with 5DCR
+```{r Model fit: c_logit_off ~ 5DCR + n_total + (1|dataset)}
+m_offloading <- glmer(
+  cbind(n_creating, n_total - n_creating) ~
+    joyExp * depSen * strTol + pre_tgaia_z + (1 | dataset),
+  family = binomial,
+  data = df_offloading
+)
+summary(m_offloading)
+car::Anova(m_offloading)
+confint(m_offloading, method = "Wald") # low incidence of Creating prompts
+```
+```{r Test the simple slopes for m4d_offloading_5dcr JE x DS interaction}
+ss_offloading <- emtrends(m_offloading, ~ joyExp, var = "depSen", at = list(joyExp = c(-1, 1)))
+summary(ss_offloading, infer = c(TRUE, TRUE))
+pairs(ss_offloading)
+```
+```{r Plot the main effect of ST on offloading}
+plot_offloading_mainST <- ggpredict(m_offloading, terms = "strTol") %>%
+  plot(colors = colours_stress[1]) +
+  labs(x = "Stress tolerance", y = "% Creating", title = NULL) +
+  theme_classic() +
+  geom_line(linewidth = 1.2, colour = colours_stress[1]) +
+  theme(axis.title = element_text(size = 14),
+        axis.text = element_text(size = 14),
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.position = "bottom")
+print(plot_offloading_mainST)
+```
+```{r Plot of DS x JE on Off-loading}
+pred_je_ds_off <-
+  ggpredict(m_offloading, terms = c("depSen", "joyExp [meansd]"))
+lvl7 <- levels(factor(pred_je_ds_off$group))
+pred_je_ds_off$group <- factor(
+  pred_je_ds_off$group,
+  levels = lvl7,
+  labels = c("Low", "Mean", "High")
+)
+# Keep only Mean-1SD and Mean+1SD
+pred_je_ds_off <- pred_je_ds_off %>%
+  filter(group %in% c("Low", "High"))
+
+plot_offloading_JE_DS <- plot(pred_je_ds_off) +
+  labs(x = "Deprivation sensitivity", y = "% Creating", title = NULL) +
+  theme_classic() +
+  scale_color_manual(name = "Joyous exploration", values = colours_dep[c(1, 3)]) +
+  scale_fill_manual(name = "Joyous exploration", values = colours_dep[c(1, 3)]) +
+  geom_line(linewidth = 1.2) +
+  theme(axis.title = element_text(size = 14),
+        axis.text = element_text(size = 14),
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.position = "bottom")
+print(plot_offloading_JE_DS)
+```
+
+## Predicting academic outcomes with information seeking profiles and metrics
+### Components and academic outcomes
+```{r Model fit: post_tgaia ~ pre_tgaia + Comp1*Comp2}
+m_acad_pca <- lmer(post_tgaia_z ~ pre_tgaia_z + Comp1 * Comp2 * c_log_total + (1 | dataset), data = df_pca_ready, REML = FALSE)
+
+summary(m_acad_pca)
+anova(m_acad_pca,type = 3)
+confint(m_acad_pca)
+```
+### Individual metrics and academic outcomes
+```{r Model fit: post_tgaia ~ pre_tgaia + individual indices in the PCA + interaction with vol}
+m_features_prompt_level <- lmer(post_tgaia_z ~ pre_tgaia_z + 
+                                  # prompt features that were previously used to create the PCs
+                                  (c_logit_active + c_logit_open + c_logit_high + mean_p2p_dist_z + mean_sys_dist_z)*c_log_total
+                                + (1 | dataset), data = df_pca_ready, REML = FALSE)
+summary(m_features_prompt_level)
+anova(m_features_prompt_level, type = 3)
+confint(m_features_prompt_level)
+```
+```{r FDR correction}
+s <- summary(m_features_prompt_level)
+pvals <- coef(s)[, "Pr(>|t|)"] # p-values for fixed effects
+pvals_fdr <- p.adjust(pvals, method = "fdr")
+pvals_fdr
+```
+
+### Offloading and academic outcomes
+```{r Model fit: post_tgaia ~ pre_tgaia + c_logit_off + interaction with vol}
+df_offloading <- df_offloading %>% left_join(df_query_intent %>% dplyr::select(studId, c_log_total), by = "studId")
+
+m_offloading_acads <- lmer(post_tgaia_z ~ pre_tgaia_z + c_logit_off * c_log_total + (1 | dataset), data = df_offloading, REML = FALSE)
+
+summary(m_offloading_acads)
+anova(m_offloading_acads, type = 3)
+```
