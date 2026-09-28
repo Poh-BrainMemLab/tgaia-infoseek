@@ -1,4 +1,4 @@
-# Repository for 'Trait curiosity shapes epistemic focus and exploration in naturalistic student-GenAI interactions'
+# Repository for 'Trait curiosity is associated with distinct information seeking in naturalistic student-GenAI interactions'
 
 Due to privacy and confidentiality considerations, we are unable to share the raw data containing individual student-chatbot exchanges. 
 
