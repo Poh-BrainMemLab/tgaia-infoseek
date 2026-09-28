@@ -1,0 +1,137 @@
+---
+title: "Academics preprocessing"
+author: "kaiiii"
+date: "2026-09-08"
+output: html_document
+---
+
+A previous iteration of data imputation conducted EM using all datapoints in the full TeacherGAIA dataset. This present script creates imputed academic results **within** the final dataset for the TeacherGAIA Info-seek project.
+
+
+** Key outputs **
+df_nonimputed - 156 complete case data
+df_imputed - 250 academic data points acquired using the EM algorithm
+
+
+```{r}
+library(readxl)
+library(writexl)
+library(tidyverse)
+library(Amelia)
+```
+
+```{r}
+root_dir <- "~/tgaia"
+```
+
+# Set up & cleaning 
+```{r import relevant datasets}
+df_academics <- read_excel(file.path(root_dir, "processed_data/academic_outcomes.xlsx"))
+
+df_selected <- read_excel(file.path(root_dir, "processed_data/conversation_logs.xlsx"))
+```
+
+```{r check duplicate academic outcomes from each student}
+# keep first response if duplicates
+dup_ids_acad <- df_academics %>% count(studId) %>% filter(n > 1) %>% pull(studId)
+
+dupes_first_acad <- df_academics %>%
+  filter(studId %in% dup_ids_acad) %>%
+  arrange(studId) %>%
+  group_by(studId) %>% slice(1) %>% ungroup()
+
+df_academics <- df_academics %>%
+  filter(!studId %in% dup_ids_acad) %>%
+  bind_rows(dupes_first_acad)
+```
+
+
+```{r get a list of studIds from the selected modules}
+df_selected %>%
+  dplyr::select(studId) %>%
+  distinct() %>%
+  pull() -> selected_studIds
+
+df_student_info <- df_selected %>% 
+  mutate(dataset = as.factor(dataset)) %>% 
+  group_by(studId) %>% 
+  summarise(dataset = first(dataset),
+            schoolLevel = first(schoolLevel))
+```
+
+# Create a nonimputed dataset
+```{r non imputed dataset}
+df_nonimputed <- df_academics %>% 
+  filter(studId %in% selected_studIds) %>% 
+  rename(pre_tgaia = assignment1_NOAI,
+         post_tgaia = assignment2_AI) %>%
+  mutate(pre_tgaia = as.numeric(pre_tgaia),
+         post_tgaia = as.numeric(post_tgaia)) %>% 
+  left_join(df_student_info, by = "studId")
+
+colSums(is.na(df_nonimputed))
+mean(is.na(df_nonimputed$pre_tgaia)) * 100
+mean(is.na(df_nonimputed$post_tgaia)) * 100
+
+
+# standardise scores within each dataset
+df_nonimputed <- df_nonimputed %>%
+  group_by(dataset) %>%
+  mutate(pre_tgaia_z = scale(pre_tgaia)[, 1],
+         post_tgaia_z = scale(post_tgaia)[, 1]) %>%
+  ungroup() %>% 
+  dplyr::select(-pre_tgaia, -post_tgaia, -dataset, -schoolLevel) %>% 
+  drop_na
+
+```
+
+
+
+# Create an imputed dataset
+
+```{r prep a df for imputation}
+df_academics_clean <- df_academics %>% 
+  filter(studId %in% selected_studIds) %>% 
+  rename(pre_tgaia = assignment1_NOAI,
+         post_tgaia = assignment2_AI) %>% 
+  mutate(across(c(pre_tgaia, post_tgaia), 
+                ~ifelse(. == "NaN", NA, .))) %>%  
+  mutate(pre_tgaia = as.numeric(pre_tgaia),
+         post_tgaia = as.numeric(post_tgaia)) %>% 
+  left_join(df_student_info, by = "studId")
+
+df_input <- df_academics_clean %>%
+  select(studId,pre_tgaia, post_tgaia) 
+```
+
+
+```{r check missingness}
+colSums(is.na(df_input))
+```
+
+
+```{r expectation maximisation}
+df_output <- amelia(as.data.frame(df_input, stringsAsFactors = FALSE), 
+                                m = 1, 
+                                seed = 123,
+                                idvars = "studId")$imputations$imp1
+colSums(is.na(df_output))
+```
+
+```{r standardise scores within each dataset}
+df_imputed <- df_output %>%
+  left_join(df_student_info, by = "studId") %>%
+  group_by(dataset) %>%
+  mutate(pre_tgaia_z = scale(pre_tgaia)[, 1],
+         post_tgaia_z = scale(post_tgaia)[, 1]) %>%
+  ungroup() %>% 
+  select(-pre_tgaia, -post_tgaia, -dataset, -schoolLevel) %>% 
+  drop_na
+```
+
+# Outputs
+```{r}
+write_xlsx(df_nonimputed, file.path(root_dir, "processed_data/acads_nonimputed.xlsx"))
+write_xlsx(df_imputed, file.path(root_dir, "processed_data/acads_imputed.xlsx"))
+```
+
