@@ -5,3 +5,5 @@ Due to privacy and confidentiality considerations, we are unable to share the ra
 - While raw student-chatbot conversation logs cannot be shared, the scripts used to acquire semantic distance measures as well as the system prompts used to engineer our LLM classifiers are made available under <b>methods</b>.
 - Deidentified and processed data to replicate our main analyses can be found under <b>processed_data</b>
 - The main analytic script can be found under <b>scripts</b>.
+
+Feedback, clarifications and queries may be directed to the corresponding author: jiahou.poh[at]nus.edu.sg. 
