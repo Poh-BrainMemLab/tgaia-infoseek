@@ -181,7 +181,7 @@ df_cognitive_intent <- data_cognitive_intent %>%
     c_logit_high = as.numeric(scale(logit_high, scale = TRUE)))
 
 
-# 4) Creating (Cognitive Offloading)
+# 4) Creating
 df_offloading <- data_cognitive_intent %>%
   group_by(studId) %>%
   summarise(
@@ -382,9 +382,9 @@ summary(ss_comp1_je_st, infer = c(TRUE, TRUE))
 pairs(ss_comp1_je_st)
 ```
 
-# How does trait curiosity predict cognitive offloading?
+# How does trait curiosity predict Creating?
 
-```{r prep data for 5DCR ~ offloading}
+```{r prep data for 5DCR ~ Creating}
 m2_data_5dcr_offloading <- df_offloading %>%
   left_join(df_curiosity_with_covars, by = "studId") %>% 
   drop_na() %>% 
@@ -577,8 +577,8 @@ Anova(m4_fit_acad_pc_nonimput, type = 3)
 ```
 
 
-## Cognitive offloading and academic outcomes
-```{r Does cognitive offloading predict academic outcomes with imputation?}
+## Creating and academic outcomes
+```{r Does Create predict academic outcomes with imputation?}
 m5_data_offloading_acads <- df_offloading %>%
   dplyr::select(studId, c_logit_off) %>%
   left_join(data_academic_outcomes_imputed %>% dplyr::select(studId, pre_tgaia_z, post_tgaia_z), by = "studId") %>%
@@ -590,7 +590,7 @@ m5_fit_acad_offloading <-  lm(post_tgaia_z ~ pre_tgaia_z + c_logit_off + c_log_t
 summary(m5_fit_acad_offloading)
 Anova(m5_fit_acad_offloading, type = 3)
 ```
-```{r Does cognitive offloading predict academic outcomes without imputation?}
+```{r Does Create predict academic outcomes without imputation?}
 m5_data_offloading_acads_nonimput <- df_offloading %>%
   dplyr::select(studId, c_logit_off) %>%
   left_join(data_academics_outcomes_nonimputed %>% dplyr::select(studId, pre_tgaia_z, post_tgaia_z), by = "studId") %>%
