@@ -26,7 +26,7 @@ inst = lapply(pkgs, library, character.only=TRUE)
 set.seed(555)
 ```
 ```{r set root dir, include = FALSE}
-root_dir <-"/Users/brainmemorylab/Library/CloudStorage/Dropbox-NUS/BrainMemLab_TeamFolder/Projects/Tidy_TeacherGAIA/05_expositions/code_clean/tgaia/"
+root_dir <-"~/tgaia/"
 ```
 ```{r set up type iii contrasts}
 options(contrasts = c("contr.sum", "contr.poly"))
