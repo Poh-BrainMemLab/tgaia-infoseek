@@ -1,6 +1,6 @@
 ---
 title: "TeacherGAIA main analysis script"
-author: "kaiiii"
+author: "kai!"
 date: "2026-09-08"
 output: 
   html_document:
@@ -406,16 +406,6 @@ summary(m2_fit_5dcr_offloading)
 Anova(m2_fit_5dcr_offloading, type = 3)
 confint.default(m2_fit_5dcr_offloading, level = 0.95)
 ```
-```{r sensitivity check: denom is not-na}
-m2_fit_5dcr_offloading_s1 <- glm(
-  cbind(n_creating, (n_is_not_na - n_creating))  ~ joyExp * depSen * strTol  + dataset,
-  family = binomial,
-  data = m2_data_5dcr_offloading)
-
-summary(m2_fit_5dcr_offloading_s1)
-Anova(m2_fit_5dcr_offloading_s1, type = 3)
-confint.default(m2_fit_5dcr_offloading_s1, level = 0.95)
-```
 
 Simple slopes for JE x DS interaction on creating
 ```{r simple slopes for JE x DS interaction on creating}
@@ -437,21 +427,7 @@ ss_offloading_je_ds <- emtrends(
 summary(ss_offloading_je_ds, infer = c(TRUE, TRUE))
 pairs(ss_offloading_je_ds)
 ```
-```{r other perspective for simple slopes for JE x DS interaction on creating}
-m_off_je_mean  <- mean(m2_data_5dcr_offloading$joyExp, na.rm = TRUE)
-m_off_je_sd <- sd(m2_data_5dcr_offloading$joyExp, na.rm = TRUE)
-m_off_st_mean  <- mean(m2_data_5dcr_offloading$strTol, na.rm = TRUE)
-m_off_st_sd <- sd(m2_data_5dcr_offloading$strTol, na.rm = TRUE)
-
-ss_offloading_ds_je <- emtrends(
-  m2_fit_5dcr_offloading,
-  ~ joyExp,
-  var = "depSen",
-  at = list(
-    joyExp = c(m_off_je_mean - m_off_je_sd, m_off_je_mean + m_off_je_sd),
-    strTol = m_off_st_mean   # hold ST constant
-  )
-)
+```
 summary(ss_offloading_ds_je, infer = c(TRUE, TRUE))
 pairs(ss_offloading_ds_je)
 ```
@@ -513,17 +489,6 @@ summary(ss_depSen_3way, infer = c(TRUE, TRUE))
 
 # Academics ~ 5DCR 
 
-```{r Does 5DCR predict academic outcomes with imputation?}
-m3_data_5dcr_imputAcads <- df_curiosity_with_covars %>%
-  left_join(data_academic_outcomes_imputed %>% dplyr::select(studId, pre_tgaia_z, post_tgaia_z), by = "studId") %>%
-  drop_na()
-print(paste("no. of students for 5DCR ~ academics:", length(unique(m3_data_5dcr_imputAcads$studId))))
-
-m3_fit_acad_5dcr <- lm(post_tgaia_z ~ pre_tgaia_z + depSen * joyExp * strTol + c_log_total + dataset, data = m3_data_5dcr_imputAcads)
-
-summary(m3_fit_acad_5dcr)
-Anova(m3_fit_acad_5dcr, type = 3)
-```
 
 ```{r Does 5DCR predict academic outcomes without imputation?}
 m3_data_5dcr_nonimputAcads <- df_curiosity_with_covars %>%
@@ -540,21 +505,6 @@ Anova(m3_fit_acad_5dcr_nonimput, type = 3)
 
 
 # Academics ~ Prompting behaviours
-```{r Do PCs predict academic outcomes with imputation?}
-m4_data_pc_acads <- df_pca_ready %>%
-  dplyr::select(studId, Comp1, Comp2) %>%
-  left_join(data_academic_outcomes_imputed %>% dplyr::select(studId, pre_tgaia_z, post_tgaia_z), by = "studId") %>%
-  left_join(df_covariates %>% dplyr::select(studId, dataset, c_log_total), by = "studId") %>%
-  drop_na()
-print(paste("no. of students for PCs ~ academics:", length(unique(m4_data_pc_acads$studId))))
-
-m4_fit_acad_pc <- lm(post_tgaia_z ~ pre_tgaia_z + Comp1 * Comp2 + c_log_total + dataset, data = m4_data_pc_acads)
-
-summary(m4_fit_acad_pc)
-Anova(m4_fit_acad_pc, type = 3)
-confint.default(m4_fit_acad_pc, level = 0.95)
-effectsize::eta_squared(car::Anova(m4_fit_acad_pc, type = 3), partial = TRUE)
-```
 ```{r Do PCs predict academic outcomes without imputation?}
 m4_data_pc_acads_nonimput <- df_pca_ready %>%
   dplyr::select(studId, Comp1, Comp2) %>%
@@ -578,18 +528,6 @@ Anova(m4_fit_acad_pc_nonimput, type = 3)
 
 
 ## Creating and academic outcomes
-```{r Does Create predict academic outcomes with imputation?}
-m5_data_offloading_acads <- df_offloading %>%
-  dplyr::select(studId, c_logit_off) %>%
-  left_join(data_academic_outcomes_imputed %>% dplyr::select(studId, pre_tgaia_z, post_tgaia_z), by = "studId") %>%
-  left_join(df_covariates %>% dplyr::select(studId, dataset, c_log_total), by = "studId") %>%
-  drop_na()
-print(paste("no. of students for offloading ~ academics:", length(unique(m5_data_offloading_acads$studId))))
-
-m5_fit_acad_offloading <-  lm(post_tgaia_z ~ pre_tgaia_z + c_logit_off + c_log_total + dataset, data = m5_data_offloading_acads)
-summary(m5_fit_acad_offloading)
-Anova(m5_fit_acad_offloading, type = 3)
-```
 ```{r Does Create predict academic outcomes without imputation?}
 m5_data_offloading_acads_nonimput <- df_offloading %>%
   dplyr::select(studId, c_logit_off) %>%
